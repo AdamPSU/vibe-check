@@ -2,8 +2,32 @@
 
 Reclaim ownership of vibe-coded / AI-assisted repos: public GitHub path → visible grounding → short voice Socratic exam → system-layer spider web.
 
-**Status:** product wiki only (no app code yet).  
+**Status:** minimal frontend scaffold and FastAPI stub.
 **Track:** OpenAI Build Week — Education.
+
+## App structure
+
+- `src/frontend/` — Next.js app managed with Bun
+- `src/backend/` — small FastAPI stub
+
+## Run locally
+
+Frontend:
+
+```bash
+cd src/frontend
+bun install
+bun dev
+```
+
+Backend:
+
+```bash
+uv sync --project src/backend
+uv run --project src/backend uvicorn src.backend.main:app --reload
+```
+
+The backend exposes `GET /health`.
 
 ## Wiki
 
