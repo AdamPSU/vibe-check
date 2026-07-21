@@ -1,12 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
-
-const GROUNDING_DURATION = 10_000;
-const TRACE_INTERVAL = 1_100;
-const SNAKE_PATH =
-  "M 0 191.294 C 133 59.529 285 59.529 437 191.294 C 589 323.059 741 323.059 893 171.529 C 1045 20 1216 20 1368 171.529 C 1520 323.059 1691 323.059 1900 158.353 L 1900 435.059 C 1710 540.471 1539 540.471 1368 408.706 C 1197 276.941 1045 276.941 893 435.059 C 741 580 589 580 437 408.706 C 285 250.588 133 250.588 0 395.529 Z";
+import { playSfx } from "../lib/sfx";
 
 const traces = [
   {
@@ -41,51 +37,90 @@ const traces = [
   },
 ];
 
+const LAST_INDEX = traces.length - 1;
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+type Game = {
+  id: string;
+  release_date: string;
+  title: string;
+  description: string;
+  screenshot_object_key: string | null;
+};
+
+function wrapIndex(index: number) {
+  if (index < 0) return LAST_INDEX;
+  if (index > LAST_INDEX) return 0;
+  return index;
+}
+
 export default function Home() {
-  const [elapsed, setElapsed] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const selectedIndexRef = useRef(selectedIndex);
 
   useEffect(() => {
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      const nextElapsed = Math.min(Date.now() - startedAt, GROUNDING_DURATION);
-      setElapsed(nextElapsed);
+    selectedIndexRef.current = selectedIndex;
+  }, [selectedIndex]);
 
-      if (nextElapsed >= GROUNDING_DURATION) {
-        window.clearInterval(timer);
+  const selectIndex = useCallback((index: number, withSound = true) => {
+    setSelectedIndex((current) => {
+      const next = wrapIndex(index);
+      if (withSound && next !== current) {
+        playSfx("move");
       }
-    }, 100);
-
-    return () => window.clearInterval(timer);
+      return next;
+    });
   }, []);
 
-  const progress = Math.round((elapsed / GROUNDING_DURATION) * 100);
-  const isComplete = elapsed >= GROUNDING_DURATION;
-  const activeTrace = isComplete
-    ? traces.length - 1
-    : Math.floor(elapsed / TRACE_INTERVAL) % traces.length;
-  const visibleTrace = traces[activeTrace];
+  const moveSelection = useCallback(
+    (delta: number) => {
+      selectIndex(selectedIndexRef.current + delta);
+    },
+    [selectIndex],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      const key = event.key.toLowerCase();
+      const isUp = key === "w" || key === "arrowup" || key === "a";
+      const isDown = key === "s" || key === "arrowdown" || key === "d";
+
+      if (!isUp && !isDown) return;
+
+      event.preventDefault();
+      moveSelection(isUp ? -1 : 1);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [moveSelection]);
+
+  const selectedTrace = traces[selectedIndex];
 
   return (
     <main className="grounding-page">
       <header className="site-header">
-        <a
-          className="wordmark"
-          href="https://github.com/AdamPSU/vibe-check"
-          aria-label="Open vibe-check on GitHub"
-        >
-          <span className="wordmark-mark" aria-hidden="true">
-            /
-          </span>
-          vibe-check
-        </a>
         <div className="nav-actions">
-          <a className="nav-button nav-button-secondary" href="#trace-panel">
+          <a
+            className="nav-button nav-button-secondary"
+            href="#menu-panel"
+            onClick={() => playSfx("click")}
+          >
             Build Week
           </a>
           <a
             className="nav-button nav-button-primary"
             href="https://github.com/AdamPSU/vibe-check"
             aria-label="Open the vibe-check GitHub repository"
+            onClick={(event) => {
+              event.preventDefault();
+              playSfx("click");
+              window.setTimeout(() => {
+                window.open("https://github.com/AdamPSU/vibe-check", "_blank", "noopener,noreferrer");
+              }, 90);
+            }}
           >
             <svg
               width="15"
@@ -104,129 +139,116 @@ export default function Home() {
         </div>
       </header>
 
-      <section
-        className="loading-shell"
-        aria-label="Grounding your repository"
-        aria-busy={!isComplete}
-      >
-        <div className="snake-image-slot" aria-hidden="true">
-          <svg
-            className="snake-image-shape"
-            viewBox="0 0 1900 600"
-            preserveAspectRatio="xMidYMid slice"
-          >
-            <defs>
-              <clipPath id="snake-cutout" clipPathUnits="userSpaceOnUse">
-                <path d={SNAKE_PATH} />
-              </clipPath>
-            </defs>
-            <image
-              href="/loading-bg.jpeg"
-              x="0"
-              y="0"
-              width="1900"
-              height="600"
-              preserveAspectRatio="xMidYMid meet"
-              clipPath="url(#snake-cutout)"
-            />
-            <path
-              className="snake-image-outline"
-              d={SNAKE_PATH}
-              fill="none"
-            />
-          </svg>
-        </div>
-
-        <div
-          className={`loading-intro ${isComplete ? "is-complete" : ""}`}
-          role="img"
-          aria-label={isComplete ? "Repository ready" : "Grounding your repository"}
-        >
+      <section className="loading-shell" aria-label="Menu">
+        <nav className="menu-panel" id="menu-panel" aria-label="Main menu">
           <Image
-            className="loading-spinner"
-            src="/spinner-mark.png"
-            width="128"
-            height="128"
-            alt=""
-            aria-hidden="true"
+            className="menu-logo"
+            src="/gotd-logo.png"
+            alt="GotD"
+            width={2122}
+            height={741}
+            priority
             unoptimized
           />
-        </div>
+          <ul
+            className="menu-list"
+            role="listbox"
+            tabIndex={0}
+            aria-activedescendant={selectedTrace.id}
+            aria-orientation="vertical"
+          >
+            {traces.map((trace, index) => {
+              const isActive = index === selectedIndex;
 
-        <section
-          className="trace-panel"
-          id="trace-panel"
-          aria-labelledby="trace-title"
-        >
-          <div className="trace-panel-header">
-            <div>
-              <h2 id="trace-title">The search, in plain sight.</h2>
-            </div>
-          </div>
-
-          <div className="trace-console" aria-live="polite">
-            <div className="console-toolbar">
-              <div className="console-lights" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-              <span>AdamPSU/vibe-check</span>
-              <span className="console-time">{isComplete ? "done" : "live"}</span>
-            </div>
-
-            <div className="trace-list">
-              {traces.map((trace, index) => (
-                <div
-                  className={`trace-row ${
-                    index === activeTrace ? "is-active" : ""
-                  } ${index < activeTrace || isComplete ? "is-finished" : ""}`}
+              return (
+                <li
+                  className={`menu-item ${isActive ? "is-active" : ""}`}
+                  id={trace.id}
                   key={trace.id}
+                  role="option"
+                  aria-selected={isActive}
+                  onMouseEnter={() => selectIndex(index)}
+                  onFocus={() => selectIndex(index)}
+                  onClick={() => {
+                    selectIndex(index, false);
+                    playSfx("click");
+                  }}
                 >
-                  <span className="trace-marker" aria-hidden="true">
-                    {index < activeTrace || isComplete ? "✓" : "·"}
+                  <span className="menu-cursor" aria-hidden="true">
+                    {isActive ? ">" : ""}
                   </span>
-                  <span className="trace-source">{trace.source}</span>
-                  <span className="trace-action">{trace.action}</span>
-                  <span className="trace-message">{trace.message}</span>
-                </div>
-              ))}
-            </div>
+                  <span className="menu-label">{trace.action}</span>
+                </li>
+              );
+            })}
+          </ul>
 
-            <div className="active-trace" role="status">
-              <span className={`trace-spinner ${isComplete ? "is-done" : ""}`} aria-hidden="true" />
-              <span>{isComplete ? "Repo brief assembled" : visibleTrace.message}</span>
-            </div>
-          </div>
-
-          <div className="trace-panel-footer">
-            <span>Codex SDK</span>
-            <span className="footer-separator" aria-hidden="true">
-              /
-            </span>
-            <span>Exa search</span>
-            <span className="footer-separator" aria-hidden="true">
-              /
-            </span>
-            <span>repo context</span>
-          </div>
-        </section>
-
-        <div className="progress-block" aria-label={`${progress}% grounded`}>
-          <div className="progress-heading">
-            <span>{isComplete ? "Grounding complete" : "Grounding in progress"}</span>
-            <span className="progress-value">{progress}%</span>
-          </div>
-          <div className="progress-track" aria-hidden="true">
-            <span style={{ width: `${progress}%` }} />
-          </div>
-          <p className="progress-caption">
-            {isComplete
-              ? "Your repo brief is ready for the next step."
-              : "Usually ready in under 30 seconds."}
+          <p className="menu-status" role="status">
+            {selectedTrace.message}
           </p>
-        </div>
+        </nav>
       </section>
+
+      <DailyCatalog />
     </main>
+  );
+}
+
+function DailyCatalog() {
+  const [games, setGames] = useState<Game[]>([]);
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+
+  useEffect(() => {
+    fetch(`${API_BASE}/catalog`)
+      .then((response) => {
+        if (!response.ok) throw new Error("catalog unavailable");
+        return response.json() as Promise<Game[]>;
+      })
+      .then((items) => {
+        setGames(items);
+        setState("ready");
+      })
+      .catch(() => setState("error"));
+  }, []);
+
+  return (
+    <section className="daily-catalog" aria-labelledby="daily-catalog-title">
+      <div className="daily-catalog-heading">
+        <p className="daily-catalog-kicker">THE DAILY ARCADE</p>
+        <h1 id="daily-catalog-title">PAST GAMES</h1>
+        <p>One shared game every day. Unlimited replay.</p>
+      </div>
+
+      {state === "loading" && <p className="daily-catalog-message">LOADING CATALOG...</p>}
+      {state === "error" && (
+        <p className="daily-catalog-message">CATALOG UNAVAILABLE.</p>
+      )}
+      {state === "ready" && games.length === 0 && (
+        <p className="daily-catalog-message">NO PUBLISHED GAMES YET.</p>
+      )}
+
+      <div className="daily-catalog-grid">
+        {games.map((game, index) => {
+          const screenshot = game.screenshot_object_key
+            ? `${API_BASE}/objects/${game.screenshot_object_key}`
+            : null;
+          return (
+            <a className="daily-game-card" href={`/games/${game.release_date}`} key={game.id}>
+              {screenshot ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={screenshot} alt={`${game.title} screenshot`} />
+              ) : (
+                <span className="daily-game-card-placeholder">SCREENSHOT PENDING</span>
+              )}
+              <span className="daily-game-card-date">
+                {index === 0 ? "TODAY / " : ""}{game.release_date}
+              </span>
+              <strong>{game.title}</strong>
+              <span>{game.description}</span>
+            </a>
+          );
+        })}
+      </div>
+    </section>
   );
 }
