@@ -11,9 +11,11 @@ def load_system_prompt(filename: str) -> str:
 
 MAKER_SYSTEM_PROMPT = load_system_prompt("maker_system.txt")
 ADVERSARIAL_TESTER_SYSTEM_PROMPT = load_system_prompt("adversarial_tester_system.txt")
+DELIVERY_CONTRACT = load_system_prompt("delivery_contract.txt")
 
 __all__ = [
     "ADVERSARIAL_TESTER_SYSTEM_PROMPT",
+    "DELIVERY_CONTRACT",
     "MAKER_SYSTEM_PROMPT",
     "load_system_prompt",
 ]

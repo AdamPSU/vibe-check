@@ -1,9 +1,4 @@
-"""Local adapters for object storage and catalog metadata.
-
-The interfaces are intentionally filesystem-backed for local development. The
-same object keys and record shapes can be backed by S3-compatible storage and
-Postgres without changing the orchestrator contract.
-"""
+"""Local development storage and the production Postgres catalog."""
 
 from __future__ import annotations
 
@@ -17,14 +12,9 @@ from threading import Lock
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .models import GenerationSession, PublishedGame
 
-
-def _safe_key(key: str) -> str:
-    path = Path(key)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"unsafe object key: {key}")
-    return path.as_posix()
+EASTERN = ZoneInfo("America/New_York")
+Record = dict[str, Any]
 
 
 class LocalObjectStore:
@@ -33,353 +23,267 @@ class LocalObjectStore:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def path_for(self, key: str) -> Path:
-        safe = _safe_key(key)
-        target = (self.root / safe).resolve()
+        path = Path(key)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"unsafe object key: {key}")
+        target = (self.root / path).resolve()
         target.relative_to(self.root)
         return target
 
-    def put_bytes(self, key: str, content: bytes) -> str:
-        target = self.path_for(key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
-        return _safe_key(key)
-
-    def put_json(self, key: str, value: Any) -> str:
-        return self.put_bytes(
-            key,
-            (json.dumps(value, indent=2, sort_keys=True) + "\n").encode("utf-8"),
-        )
-
-    def put_tree(self, source: Path, prefix: str) -> str:
+    def put_tree(self, source: Path, key: str) -> str:
         source = source.resolve()
         if not source.is_dir():
             raise ValueError(f"source tree does not exist: {source}")
-        prefix = _safe_key(prefix)
-        destination = self.path_for(prefix)
-        destination.mkdir(parents=True, exist_ok=True)
-        for item in source.rglob("*"):
-            relative = item.relative_to(source)
-            if item.is_symlink():
-                raise ValueError(f"source tree contains symlink: {relative}")
-            target = destination / relative
-            if item.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-            elif item.is_file():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(item, target)
-        return prefix
-
-    def exists(self, key: str) -> bool:
-        return self.path_for(key).exists()
+        if any(path.is_symlink() for path in source.rglob("*")):
+            raise ValueError(f"source tree contains a symlink: {source}")
+        target = self.path_for(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, target)
+        return Path(key).as_posix()
 
 
 class LocalCatalogStore:
-    """Append-safe JSON metadata adapter used by the local app and tests."""
+    """Small atomic JSON catalog used by local runs and tests."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Lock()
-        if not self.path.exists():
-            self._write({"games": {}, "sessions": {}})
+        if not path.exists():
+            self._write({"sessions": {}, "games": {}})
 
-    def _read(self) -> dict[str, Any]:
+    def _read(self) -> Record:
         return json.loads(self.path.read_text(encoding="utf-8"))
 
-    def _write(self, value: dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temporary = tempfile.mkstemp(prefix="catalog-", suffix=".json", dir=self.path.parent)
+    def _write(self, data: Record) -> None:
+        fd, temporary = tempfile.mkstemp(dir=self.path.parent, prefix="catalog-")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(value, handle, indent=2, sort_keys=True)
+                json.dump(data, handle, indent=2, sort_keys=True)
                 handle.write("\n")
             os.replace(temporary, self.path)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def create_session(self, session: GenerationSession) -> None:
+    def claim_session(self, session: Record) -> None:
+        release = session["release_date"]
         with self._lock:
             data = self._read()
-            data["sessions"][session.id] = session.to_dict()
+            if release in data["sessions"]:
+                raise ValueError(f"a generation session already exists for {release}")
+            data["sessions"][release] = session
             self._write(data)
 
-    def update_session(self, session: GenerationSession) -> None:
+    def update_session(self, session: Record) -> None:
         with self._lock:
             data = self._read()
-            data["sessions"][session.id] = session.to_dict()
+            data["sessions"][session["release_date"]] = session
             self._write(data)
 
-    def publish_game(self, game: PublishedGame) -> None:
+    def save_game(self, game: Record) -> None:
+        release = game["release_date"]
         with self._lock:
             data = self._read()
-            for existing in data["games"].values():
-                if existing["release_date"] == game.release_date:
-                    raise ValueError(f"a game is already published for {game.release_date}")
-            data["games"][game.id] = game.to_dict()
+            if release in data["games"]:
+                raise ValueError(f"a game already exists for {release}")
+            data["games"][release] = game
             self._write(data)
 
-    def list_games(self, include_unpublished: bool = False) -> list[dict[str, Any]]:
+    def list_games(self) -> list[Record]:
+        today = datetime.now(EASTERN).date().isoformat()
         with self._lock:
-            data = self._read()
-            games = list(data["games"].values())
-            if not include_unpublished:
-                today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-                games = [
-                    game
-                    for game in games
-                    if game["status"] == "published" and game["release_date"] <= today
-                ]
-            return sorted(
-                games,
-                key=lambda game: game["release_date"],
-                reverse=True,
-            )
+            games = self._read()["games"].values()
+            visible = [
+                game
+                for game in games
+                if game["status"] == "published" and game["release_date"] <= today
+            ]
+        return sorted(visible, key=lambda game: game["release_date"], reverse=True)
 
-    def get_game(self, release_date: str) -> dict[str, Any] | None:
-        return next(
-            (game for game in self.list_games() if game["release_date"] == release_date),
-            None,
-        )
-
-    def get_scheduled_game(self, release_date: str) -> dict[str, Any] | None:
+    def get_game(self, release_date: str) -> Record | None:
+        today = datetime.now(EASTERN).date().isoformat()
         with self._lock:
-            data = self._read()
-            return next(
-                (
-                    game
-                    for game in data["games"].values()
-                    if game["release_date"] == release_date
-                ),
-                None,
-            )
+            game = self._read()["games"].get(release_date)
+        if game and game["status"] == "published" and release_date <= today:
+            return game
+        return None
+
+    def get_scheduled_game(self, release_date: str) -> Record | None:
+        with self._lock:
+            return self._read()["games"].get(release_date)
+
+    def has_session_for_release(self, release_date: str) -> bool:
+        with self._lock:
+            return release_date in self._read()["sessions"]
+
+    def list_sessions(self) -> list[Record]:
+        with self._lock:
+            sessions = list(self._read()["sessions"].values())
+        return sorted(sessions, key=lambda session: session["started_at"], reverse=True)
 
     def promote_due(self, through_date: str) -> int:
         with self._lock:
             data = self._read()
-            promoted = 0
+            due = [
+                game
+                for game in data["games"].values()
+                if game["status"] == "ready" and game["release_date"] <= through_date
+            ]
             now = datetime.now(timezone.utc).isoformat()
-            for game in data["games"].values():
-                if game["status"] == "ready" and game["release_date"] <= through_date:
-                    game["status"] = "published"
-                    game["published_at"] = now
-                    promoted += 1
-            if promoted:
+            for game in due:
+                game.update(status="published", published_at=now)
+            if due:
                 self._write(data)
-            return promoted
+            return len(due)
 
-    def has_session_for_release(self, release_date: str) -> bool:
+    def fail_running_sessions(self, summary: str) -> int:
         with self._lock:
             data = self._read()
-            return any(
-                session["release_date"] == release_date
+            running = [
+                session
                 for session in data["sessions"].values()
-            )
-
-    def list_sessions(self) -> list[dict[str, Any]]:
-        with self._lock:
-            data = self._read()
-            return sorted(
-                data["sessions"].values(),
-                key=lambda session: session["started_at"],
-                reverse=True,
-            )
+                if session["status"] == "running"
+            ]
+            now = datetime.now(timezone.utc).isoformat()
+            for session in running:
+                session.update(
+                    status="failed",
+                    ended_at=now,
+                    failure_category="worker_restart",
+                    failure_summary=summary,
+                )
+            if running:
+                self._write(data)
+            return len(running)
 
 
 class PostgresCatalogStore:
-    """Postgres metadata adapter for the hosted deployment.
-
-    The import is deferred so the credential-free local mode does not require
-    a running database or the optional psycopg package.
-    """
+    """Postgres implementation with release-date uniqueness as the durable claim."""
 
     def __init__(self, dsn: str) -> None:
         try:
             import psycopg
-        except ImportError as exc:  # pragma: no cover - exercised in hosted mode
-            raise RuntimeError(
-                "Postgres mode requires the optional 'postgres' dependency"
-            ) from exc
-        self._connection = psycopg.connect(dsn, autocommit=True)
+            from psycopg.rows import dict_row
+        except ImportError as exc:
+            raise RuntimeError("install the backend's postgres extra") from exc
+        self._connection = psycopg.connect(dsn, autocommit=True, row_factory=dict_row)
         self._lock = Lock()
         with self._connection.cursor() as cursor:
             cursor.execute(
                 """
                 CREATE TABLE IF NOT EXISTS generation_sessions (
-                    id TEXT PRIMARY KEY,
-                    game_id TEXT NOT NULL,
-                    release_date DATE NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at TIMESTAMPTZ NOT NULL,
-                    ended_at TIMESTAMPTZ,
-                    failure_category TEXT,
-                    failure_summary TEXT
-                );
+                    id TEXT PRIMARY KEY, game_id TEXT NOT NULL,
+                    release_date DATE NOT NULL UNIQUE, status TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ,
+                    failure_category TEXT, failure_summary TEXT
+                )
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS games (
-                    id TEXT PRIMARY KEY,
-                    release_date DATE NOT NULL UNIQUE,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    source_object_key TEXT NOT NULL,
-                    build_object_key TEXT NOT NULL,
-                    screenshot_object_key TEXT,
-                    created_at TIMESTAMPTZ NOT NULL,
-                    published_at TIMESTAMPTZ NOT NULL
-                );
+                    id TEXT PRIMARY KEY, release_date DATE NOT NULL UNIQUE,
+                    title TEXT NOT NULL, description TEXT NOT NULL, status TEXT NOT NULL,
+                    source_object_key TEXT NOT NULL, build_object_key TEXT NOT NULL,
+                    screenshot_object_key TEXT, created_at TIMESTAMPTZ NOT NULL,
+                    published_at TIMESTAMPTZ
+                )
                 """
             )
-
-    def create_session(self, session: GenerationSession) -> None:
-        self.update_session(session)
-
-    def update_session(self, session: GenerationSession) -> None:
-        with self._lock, self._connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO generation_sessions
-                  (id, game_id, release_date, status, started_at, ended_at,
-                   failure_category, failure_summary)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET
-                  status = EXCLUDED.status,
-                  ended_at = EXCLUDED.ended_at,
-                  failure_category = EXCLUDED.failure_category,
-                  failure_summary = EXCLUDED.failure_summary
-                """,
-                (
-                    session.id,
-                    session.game_id,
-                    session.release_date,
-                    session.status.value,
-                    session.started_at,
-                    session.ended_at,
-                    session.failure_category,
-                    session.failure_summary,
-                ),
-            )
-
-    def publish_game(self, game: PublishedGame) -> None:
-        with self._lock, self._connection.cursor() as cursor:
-            cursor.execute(
-                """
-                INSERT INTO games
-                  (id, release_date, title, description, status,
-                   source_object_key, build_object_key, screenshot_object_key,
-                   created_at, published_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    game.id,
-                    game.release_date,
-                    game.title,
-                    game.description,
-                    game.status.value,
-                    game.source_object_key,
-                    game.build_object_key,
-                    game.screenshot_object_key,
-                    game.created_at,
-                    game.published_at,
-                ),
-            )
+            cursor.execute("ALTER TABLE games ALTER COLUMN published_at DROP NOT NULL")
 
     @staticmethod
-    def _game_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _clean(row: Record | None) -> Record | None:
+        if row is None:
+            return None
+        return {
+            key: value.isoformat() if hasattr(value, "isoformat") else value
+            for key, value in row.items()
+        }
+
+    def claim_session(self, session: Record) -> None:
+        with self._lock, self._connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO generation_sessions VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                tuple(session[key] for key in (
+                    "id", "game_id", "release_date", "status", "started_at", "ended_at",
+                    "failure_category", "failure_summary",
+                )),
+            )
+
+    def update_session(self, session: Record) -> None:
+        with self._lock, self._connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE generation_sessions SET status=%s, ended_at=%s,
+                    failure_category=%s, failure_summary=%s WHERE release_date=%s
+                """,
+                (
+                    session["status"], session["ended_at"], session["failure_category"],
+                    session["failure_summary"], session["release_date"],
+                ),
+            )
+
+    def save_game(self, game: Record) -> None:
         fields = (
-            "id",
-            "release_date",
-            "title",
-            "description",
-            "status",
-            "source_object_key",
-            "build_object_key",
-            "screenshot_object_key",
-            "created_at",
-            "published_at",
+            "id", "release_date", "title", "description", "status", "source_object_key",
+            "build_object_key", "screenshot_object_key", "created_at", "published_at",
         )
-        result = dict(zip(fields, row))
-        for field in ("release_date", "created_at", "published_at"):
-            if result[field] is not None:
-                result[field] = result[field].isoformat()
-        return result
-
-    def list_games(self, include_unpublished: bool = False) -> list[dict[str, Any]]:
-        with self._lock, self._connection.cursor() as cursor:
-            query = (
-                "SELECT id, release_date, title, description, status, source_object_key, "
-                "build_object_key, screenshot_object_key, created_at, published_at "
-                "FROM games "
-            )
-            if not include_unpublished:
-                today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
-                query += "WHERE status = 'published' AND release_date <= %s "
-            query += "ORDER BY release_date DESC"
-            cursor.execute(query, (today,) if not include_unpublished else ())
-            return [self._game_row(row) for row in cursor.fetchall()]
-
-    def get_game(self, release_date: str) -> dict[str, Any] | None:
         with self._lock, self._connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, release_date, title, description, status, source_object_key, "
-                "build_object_key, screenshot_object_key, created_at, published_at "
-                "FROM games WHERE release_date = %s",
-                (release_date,),
+                "INSERT INTO games VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                tuple(game[field] for field in fields),
             )
-            row = cursor.fetchone()
-            return self._game_row(row) if row else None
 
-    def get_scheduled_game(self, release_date: str) -> dict[str, Any] | None:
+    def list_games(self) -> list[Record]:
+        today = datetime.now(EASTERN).date().isoformat()
         with self._lock, self._connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, release_date, title, description, status, source_object_key, "
-                "build_object_key, screenshot_object_key, created_at, published_at "
-                "FROM games WHERE release_date = %s",
-                (release_date,),
+                "SELECT * FROM games WHERE status='published' AND release_date <= %s "
+                "ORDER BY release_date DESC",
+                (today,),
             )
-            row = cursor.fetchone()
-            return self._game_row(row) if row else None
+            return [self._clean(row) for row in cursor.fetchall()]  # type: ignore[misc]
 
-    def promote_due(self, through_date: str) -> int:
+    def _game(self, release_date: str, published_only: bool) -> Record | None:
+        where = "release_date=%s" + (" AND status='published'" if published_only else "")
         with self._lock, self._connection.cursor() as cursor:
-            cursor.execute(
-                "UPDATE games SET status = 'published', published_at = NOW() "
-                "WHERE status = 'ready' AND release_date <= %s",
-                (through_date,),
-            )
-            return cursor.rowcount
+            cursor.execute(f"SELECT * FROM games WHERE {where}", (release_date,))
+            return self._clean(cursor.fetchone())
+
+    def get_game(self, release_date: str) -> Record | None:
+        return self._game(release_date, published_only=True)
+
+    def get_scheduled_game(self, release_date: str) -> Record | None:
+        return self._game(release_date, published_only=False)
 
     def has_session_for_release(self, release_date: str) -> bool:
         with self._lock, self._connection.cursor() as cursor:
             cursor.execute(
-                "SELECT 1 FROM generation_sessions WHERE release_date = %s LIMIT 1",
-                (release_date,),
+                "SELECT 1 FROM generation_sessions WHERE release_date=%s", (release_date,)
             )
             return cursor.fetchone() is not None
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self) -> list[Record]:
+        with self._lock, self._connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM generation_sessions ORDER BY started_at DESC")
+            return [self._clean(row) for row in cursor.fetchall()]  # type: ignore[misc]
+
+    def promote_due(self, through_date: str) -> int:
         with self._lock, self._connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, game_id, release_date, status, started_at, ended_at, "
-                "failure_category, failure_summary FROM generation_sessions "
-                "ORDER BY started_at DESC"
+                "UPDATE games SET status='published', published_at=NOW() "
+                "WHERE status='ready' AND release_date <= %s",
+                (through_date,),
             )
-            fields = (
-                "id",
-                "game_id",
-                "release_date",
-                "status",
-                "started_at",
-                "ended_at",
-                "failure_category",
-                "failure_summary",
-            )
-            return [
-                {
-                    key: value.isoformat() if hasattr(value, "isoformat") else value
-                    for key, value in zip(fields, row)
-                }
-                for row in cursor.fetchall()
-            ]
+            return cursor.rowcount
 
-    def close(self) -> None:
-        self._connection.close()
+    def fail_running_sessions(self, summary: str) -> int:
+        with self._lock, self._connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE generation_sessions SET status='failed', ended_at=NOW(), "
+                "failure_category='worker_restart', failure_summary=%s WHERE status='running'",
+                (summary,),
+            )
+            return cursor.rowcount

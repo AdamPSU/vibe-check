@@ -1,0 +1,17 @@
+# Daily game delivery contract
+
+The only publishable output is the `dist/` tree in this workspace.
+
+Its top level may contain only:
+
+- `index.html` — required browser entrypoint.
+- `metadata.json` — required catalog metadata.
+- `game/` — optional runtime code, styles, WebAssembly, or data.
+- `assets/` — optional images, fonts, and other visual resources.
+- `audio/` — optional music and sound effects.
+
+`metadata.json` must be valid JSON with nonempty string fields named `title` and `description`. Additional metadata fields are allowed but ignored by the host.
+
+All files required while the game is running must live under `dist/`. Source files, build tooling, test evidence, and the adversarial report may live elsewhere in the workspace.
+
+Before ending the session, call the `validate_delivery` MCP tool. If it reports any error, fix the package and call it again. Do not finish until it returns `valid: true`.
