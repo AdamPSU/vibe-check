@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
-daily-game = "src.backend.generator:main"
+daily-game = "src.backend.cli:main"
 
 [project.optional-dependencies]
 postgres = [

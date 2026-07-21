@@ -36,6 +36,22 @@ Python GenerationOrchestrator
     +-- publish when the release date is due
 ```
 
+The backend stays intentionally shallow:
+
+```text
+src/backend/
+  main.py                 FastAPI routes
+  cli.py                  worker and one-shot entrypoint
+  generation/             Codex session, pipeline, and scheduler
+  data/                   catalog and object-storage adapters
+  delivery/               delivery contract and validator MCP
+  prompts/                durable maker and tester instructions
+  tests/                  boundary-focused tests
+```
+
+The top-level modules compose the packages; they do not contain another service
+layer or generic repository/adapter hierarchy.
+
 The harness deliberately has a weak host and a strong maker. Python owns lifecycle and persistence. Codex owns the difficult semantic questions: whether the game is understandable, enjoyable, finishable, replayable, and production-ready.
 
 ### Why the Codex SDK
@@ -100,7 +116,7 @@ The maker may install dependencies inside its isolated workspace. It cannot publ
 
 ### Adversarial tester
 
-The native Codex subagent is independently configured in each workspace. It receives `gpt-5.6-sol`, `xhigh`, and a read-only sandbox. It can use Exa, Chrome, and source inspection, but cannot edit the game, install fixes, use Lyria, publish, or spawn another agent.
+The native Codex subagent is independently configured in each workspace. It receives `gpt-5.6-sol`, `xhigh`, and a read-only sandbox. It can use Exa, Chrome, and source inspection, but cannot edit the game, install fixes, generate assets, publish, or spawn another agent.
 
 It tests the game as a black box first, then reads code to diagnose observed behavior. It returns one evidence-based report to the maker. The main maker decides how to act on that report while remaining responsible for the final game.
 
@@ -228,21 +244,21 @@ uv run --project src/backend python -m unittest discover -s src/backend/tests -v
 Run one generation:
 
 ```bash
-uv run --project src/backend python -m src.backend.generator \
+uv run --project src/backend python -m src.backend.cli \
   --date 2026-07-21 --data-dir var/daily-games
 ```
 
 Run the worker loop:
 
 ```bash
-uv run --project src/backend python -m src.backend.generator \
+uv run --project src/backend python -m src.backend.cli \
   --loop --data-dir var/daily-games
 ```
 
 Run an isolated real-tool rehearsal without catalog or object-store writes:
 
 ```bash
-uv run --project src/backend python -m src.backend.generator \
+uv run --project src/backend python -m src.backend.cli \
   --artifact-only --real-smoke --date 2099-01-01 \
   --data-dir /tmp/vibe-check-codex-smoke
 ```

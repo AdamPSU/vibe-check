@@ -4,27 +4,21 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
-from .prompts import (
+from ..prompts import (
     ADVERSARIAL_TESTER_SYSTEM_PROMPT,
     DELIVERY_CONTRACT,
     MAKER_SYSTEM_PROMPT,
 )
 
 
-@dataclass(slots=True)
-class MakerResult:
-    final_response: str
-    provider: str
-
-
 class GameMaker(Protocol):
-    def generate(self, workspace: Path) -> MakerResult: ...
+    def generate(self, workspace: Path) -> str: ...
 
 
 def _toml(value: str) -> str:
@@ -114,7 +108,7 @@ class CodexSdkMaker:
             "enabled = true\n"
             "required = true\n"
             f"command = {_toml(sys.executable)}\n"
-            'args = ["-m", "src.backend.delivery_mcp"]\n'
+            'args = ["-m", "src.backend.delivery.mcp"]\n'
             f"cwd = {_toml(str(workspace))}\n"
             f"env = {{ PYTHONPATH = {_toml(str(project_root))} }}\n"
             'enabled_tools = ["validate_delivery"]\n'
@@ -137,7 +131,7 @@ class CodexSdkMaker:
             config.append(f"[mcp_servers.{name}]\nenabled = false\n")
         (codex_dir / "config.toml").write_text("\n".join(config), encoding="utf-8")
 
-    def generate(self, workspace: Path) -> MakerResult:
+    def generate(self, workspace: Path) -> str:
         self._configure_workspace(workspace)
         work_order = (
             "Build one complete daily game in this workspace. Follow AGENTS.md. Once a "
@@ -173,4 +167,4 @@ class CodexSdkMaker:
             final_response = _record_turn(
                 thread.turn(work_order), workspace / "codex-events.jsonl"
             )
-        return MakerResult(final_response, f"codex-sdk-subscription:{self.model}")
+        return final_response

@@ -7,7 +7,7 @@ from datetime import datetime, time as clock_time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .orchestrator import GenerationOrchestrator
+from .pipeline import GenerationOrchestrator
 
 
 EASTERN = ZoneInfo("America/New_York")

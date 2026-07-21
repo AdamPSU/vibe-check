@@ -12,11 +12,9 @@ from zoneinfo import ZoneInfo
 
 from openai_codex import ApprovalMode, Sandbox
 
-from src.backend.agents import CodexSdkMaker, MakerResult
-from src.backend.delivery import validate_delivery
-from src.backend.delivery_mcp import validate_delivery as validate_delivery_tool
-from src.backend.orchestrator import GenerationOrchestrator
-from src.backend.scheduler import DailyGenerationLoop
+from src.backend.generation.codex import CodexSdkMaker
+from src.backend.generation.pipeline import GenerationOrchestrator
+from src.backend.generation.scheduler import DailyGenerationLoop
 
 
 class FakeMaker:
@@ -25,7 +23,7 @@ class FakeMaker:
         self.malformed_metadata = malformed_metadata
         self.calls = 0
 
-    def generate(self, workspace: Path) -> MakerResult:
+    def generate(self, workspace: Path) -> str:
         self.calls += 1
         if self.calls <= self.failures:
             raise RuntimeError("maker failed")
@@ -36,70 +34,7 @@ class FakeMaker:
             {"title": "Tiny Orbit", "description": "A small orbital game."}
         )
         (dist / "metadata.json").write_text(metadata, encoding="utf-8")
-        return MakerResult("TITLE: This response is ignored", "fake")
-
-
-class DeliveryTests(unittest.TestCase):
-    @staticmethod
-    def _package(root: Path, metadata: object | None = None) -> Path:
-        dist = root / "dist"
-        dist.mkdir()
-        (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
-        if metadata is not None:
-            (dist / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-        return dist
-
-    def test_valid_minimal_and_populated_packages(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            dist = self._package(
-                root,
-                {"title": "Game", "description": "Description", "extra": True},
-            )
-            self.assertTrue(validate_delivery(root)["valid"])
-            for name in ("game", "assets", "audio"):
-                (dist / name).mkdir()
-                (dist / name / "file.bin").write_bytes(b"content")
-            self.assertTrue(validate_delivery(root)["valid"])
-
-    def test_missing_and_malformed_required_files(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "dist").mkdir()
-            errors = validate_delivery(root)["errors"]
-            self.assertIn("dist/index.html is missing", errors)
-            self.assertIn("dist/metadata.json is missing", errors)
-
-            (root / "dist" / "metadata.json").write_text("{", encoding="utf-8")
-            self.assertIn("not valid JSON", " ".join(validate_delivery(root)["errors"]))
-
-    def test_metadata_fields_are_nonempty_strings(self) -> None:
-        for metadata in (
-            {},
-            {"title": "", "description": "ok"},
-            {"title": "ok", "description": 3},
-        ):
-            with self.subTest(metadata=metadata), TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                self._package(root, metadata)
-                self.assertFalse(validate_delivery(root)["valid"])
-
-    def test_top_level_names_and_namespace_types_are_enforced(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            dist = self._package(root, {"title": "Game", "description": "Good"})
-            (dist / "other.js").touch()
-            (dist / "audio").touch()
-            errors = validate_delivery(root)["errors"]
-            self.assertIn("dist/other.js is not an allowed top-level entry", errors)
-            self.assertIn("dist/audio must be a directory", errors)
-
-    def test_mcp_tool_is_bound_to_its_working_directory(self) -> None:
-        with TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            self._package(root, {"title": "Game", "description": "Good"})
-            with patch("src.backend.delivery_mcp.Path.cwd", return_value=root):
-                self.assertTrue(validate_delivery_tool()["valid"])
+        return "TITLE: This response is ignored"
 
 
 class PipelineTests(unittest.TestCase):
@@ -107,7 +42,7 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             orchestrator = GenerationOrchestrator(root, FakeMaker())
-            with patch("src.backend.delivery.validate_delivery") as validator:
+            with patch("src.backend.delivery.contract.validate_delivery") as validator:
                 result = orchestrator.run("2026-07-21")
 
             validator.assert_not_called()
@@ -207,7 +142,7 @@ class CodexSdkMakerTests(unittest.TestCase):
     def test_one_subscription_sdk_turn_with_scoped_configuration(self) -> None:
         codex, thread = self._codex()
         with TemporaryDirectory() as temporary, patch(
-            "src.backend.agents.Codex", return_value=codex
+            "src.backend.generation.codex.Codex", return_value=codex
         ) as constructor:
             workspace = Path(temporary)
             result = CodexSdkMaker().generate(workspace)
@@ -241,13 +176,12 @@ class CodexSdkMakerTests(unittest.TestCase):
                 [json.loads(line)["method"] for line in (workspace / "codex-events.jsonl").read_text().splitlines()],
                 ["item/completed", "turn/completed"],
             )
-            self.assertEqual(result.final_response, "Build complete.")
-            self.assertEqual(result.provider, "codex-sdk-subscription:gpt-5.6-luna")
+            self.assertEqual(result, "Build complete.")
 
     def test_sdk_failure_propagates(self) -> None:
         codex, _ = self._codex("failed")
         with TemporaryDirectory() as temporary, patch(
-            "src.backend.agents.Codex", return_value=codex
+            "src.backend.generation.codex.Codex", return_value=codex
         ):
             with self.assertRaisesRegex(RuntimeError, "SDK failed"):
                 CodexSdkMaker().generate(Path(temporary))

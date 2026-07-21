@@ -53,7 +53,7 @@ The registration is:
 - Bound to the generated workspace as its working directory.
 - Read-only and idempotent.
 - Automatically approved.
-- Available to the maker and disabled for the adversarial tester.
+- The tester is instructed to report against the package without calling it.
 
 It has no credentials and accepts no path argument.
 
@@ -76,7 +76,7 @@ uv run --project src/backend python -m unittest discover -s src/backend/tests -v
 Run an isolated real-tool rehearsal with an unused date and temporary directory:
 
 ```bash
-uv run --project src/backend python -m src.backend.generator \
+uv run --project src/backend python -m src.backend.cli \
   --artifact-only --real-smoke --date 2099-01-01 \
   --data-dir /tmp/vibe-check-codex-smoke
 ```

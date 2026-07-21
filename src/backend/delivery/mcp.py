@@ -6,7 +6,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from .delivery import validate_delivery as validate_workspace
+from .contract import validate_delivery as validate_workspace
 
 
 mcp = FastMCP(

@@ -5,7 +5,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .storage import LocalCatalogStore, LocalObjectStore, PostgresCatalogStore
+from .data.catalog import LocalCatalogStore, PostgresCatalogStore
+from .data.objects import LocalObjectStore
 
 app = FastAPI(title="Vibe Check API", version="0.1.0")
 app.add_middleware(

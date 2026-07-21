@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .agents import GameMaker, MakerResult
-from .storage import LocalCatalogStore, LocalObjectStore, Record
+from ..data.catalog import LocalCatalogStore, Record
+from ..data.objects import LocalObjectStore
+from .codex import GameMaker
 
 
 def utc_now() -> str:
@@ -21,7 +22,6 @@ def utc_now() -> str:
 class PipelineResult:
     session: Record
     game: Record
-    maker: MakerResult
     workspace: Path
 
 
@@ -78,9 +78,9 @@ class GenerationOrchestrator:
         self._event(session_id, "session.started", release_date=release_date)
 
         try:
-            maker = self.maker.generate(workspace)
+            final_response = self.maker.generate(workspace)
             (workspace / "maker-final-response.txt").write_text(
-                maker.final_response, encoding="utf-8"
+                final_response, encoding="utf-8"
             )
             metadata = json.loads(
                 (workspace / "dist" / "metadata.json").read_text(encoding="utf-8")
@@ -109,7 +109,7 @@ class GenerationOrchestrator:
             if persist:
                 self.catalog.update_session(session)
             self._event(session_id, "game.ready", game_id=game_id, status=game["status"])
-            return PipelineResult(session, game, maker, workspace)
+            return PipelineResult(session, game, workspace)
         except Exception as exc:
             session.update(
                 status="failed",

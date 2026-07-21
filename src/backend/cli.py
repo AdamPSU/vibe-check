@@ -8,10 +8,10 @@ import os
 from datetime import date
 from pathlib import Path
 
-from .agents import CodexSdkMaker
-from .orchestrator import GenerationOrchestrator
-from .scheduler import DailyGenerationLoop
-from .storage import PostgresCatalogStore
+from .data.catalog import PostgresCatalogStore
+from .generation.codex import CodexSdkMaker
+from .generation.pipeline import GenerationOrchestrator
+from .generation.scheduler import DailyGenerationLoop
 
 
 def build_orchestrator(data_dir: Path, smoke_test: bool = False) -> GenerationOrchestrator:

@@ -14,4 +14,4 @@ Return one natural-language report to the parent maker containing:
 - Repair direction when clear.
 - Non-blocking polish notes separated from failures.
 
-Do not invent scores or actions, hide uncertainty, modify the game, or spawn another agent. The parent maker will evaluate and act on your report.
+Do not invent scores or actions, hide uncertainty, modify the game, generate assets, call the delivery validator, or spawn another agent. The parent maker will evaluate and act on your report.
